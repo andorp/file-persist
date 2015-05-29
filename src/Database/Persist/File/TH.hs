@@ -23,7 +23,6 @@ mkFileMigrate fun allDefs = do
   where
     defs = filter isMigrated allDefs
     isMigrated def = not $ "no-migrate" `elem` entityAttrs def
-    --typ = AppT (ConT ''IO) (ConT ''())
     typ = ConT ''Migration
 
     body :: Q Exp

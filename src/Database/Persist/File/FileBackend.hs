@@ -7,17 +7,24 @@
 {-# LANGUAGE TypeFamilies #-}
 module Database.Persist.File.FileBackend where
 
-import Prelude hiding (writeFile)
+import Prelude hiding (filter, writeFile)
 
 import           Data.Aeson as Aeson
 import           Data.Bifunctor
 import           Data.Char
+import           Data.Fixed
+import           Data.Hashable
 import           Data.List (groupBy, intersperse)
 import           Data.Map (Map)
 import qualified Data.Map as Map
+import           Data.Maybe
+import           Data.Ratio
 import           Data.String
 import           Data.Text (Text)
 import qualified Data.Text as Text
+import           Data.Time.Calendar
+import           Data.Time.Clock
+import           Data.Time.LocalTime
 import           Database.Persist.Class
 import           Database.Persist.Sql hiding (update, updateField)
 import           Database.Persist.TH
@@ -33,18 +40,38 @@ import           Control.Monad.Trans.Reader
 import           Data.String
 import qualified Data.Text as Text
 import           Data.Typeable
+
 import           System.IO hiding (writeFile)
 
 import           Test.QuickCheck
 
+import           Database.Persist.File.Base hiding (updateField)
 import           Database.Persist.File.Directory
 
 data FileBackend = FileBackend {
-    baseDir    :: FilePath
+    baseDir :: FilePath
   } deriving (Eq, Show)
+
+
+type PersistValueMap = Map FieldDef PersistValue
+
+dataDirName     = "data"
+metaDataDirName = "meta"
+
+dataDir :: FileBackend -> FilePath
+dataDir (FileBackend baseDir) = baseDir </> dataDirName
+
+metaDataDir :: FileBackend -> FilePath
+metaDataDir (FileBackend baseDir) = baseDir </> metaDataDirName
 
 runFileBackend :: FileBackend -> ReaderT FileBackend IO a -> IO a
 runFileBackend = flip runReaderT
+
+getDataDir :: Monad m => ReaderT FileBackend m FilePath
+getDataDir = asks dataDir
+
+getMetaDataDir :: Monad m => ReaderT FileBackend m FilePath
+getMetaDataDir = asks metaDataDir
 
 data FileBackendException
   = FBE_General
@@ -52,6 +79,9 @@ data FileBackendException
   | FBE_KeyExist Text
   | FBE_KeyDoesNotExist Text
   | FBE_FieldDoesNotExist Text
+  | FBE_UniqueContraint Text
+  | FBE_AmbigiousUniqueContraintMapping Text
+  | FBE_UnkownLinkFile Text
   deriving (Eq, Typeable, Show)
 
 instance Exception FileBackendException
@@ -63,16 +93,6 @@ instance Exception FileBackendException
 entityDBName :: (PersistEntity record, PersistEntityBackend record ~ FileBackend)
                => record -> Text
 entityDBName = unDBName . entityDB . entityDef . Just
-
-entityDBFields :: (PersistEntity record, PersistEntityBackend record ~ FileBackend)
-               => record -> [FieldDef]
-entityDBFields = entityFields . entityDef . Just
-
-type PersistValueMap = Map FieldDef PersistValue
-
--- Creates a map from a given entity record, that maps a field def into a PersistValue
-persistEntityValueMap :: (PersistEntity record, PersistEntityBackend record ~ FileBackend) => record -> PersistValueMap
-persistEntityValueMap val = Map.fromList $ zip <$> entityDBFields <*> (map toPersistValue . toPersistFields) $ val
 
 recordTypeFromKey :: Key record -> record
 recordTypeFromKey _ = error "recordTypeFromKey"
@@ -94,14 +114,16 @@ doesEntityExist :: (PersistEntity record, PersistEntityBackend record ~ FileBack
 doesEntityExist baseDir key = doesDirectoryExist $ entityDirFromKey baseDir key
 
 insertDBValue :: (PersistEntity record, PersistEntityBackend record ~ FileBackend)
-              => (FilePath -> IO FilePath) -> FilePath -> record -> IO FilePath 
-insertDBValue createEntityDir baseDir val = do
+              => (FilePath -> IO FilePath) -> FilePath -> FilePath -> record -> IO FilePath 
+insertDBValue createEntityDir baseDir metaDir val = do
   let entityName = Text.unpack $ entityDBName val
   let entityDirBase = baseDir </> entityName
   entityDir <- createEntityDir entityDirBase
+  print entityDir
   let values = zip <$> entityDBFields <*> (map toPersistValue . toPersistFields) $ val
   forM_ values $ \(fieldInfo, persistValue) ->
     saveField baseDir entityDir fieldInfo persistValue
+  linkUniqueValuesToEntity metaDir entityDir val
   return entityDir
 
 replaceDBValue :: (PersistEntity record, PersistEntityBackend record ~ FileBackend)
@@ -135,7 +157,7 @@ updateField basePath entityPath field value =
       let keyDir = entityPath </> fieldName <.> "lnk"
       removeDirectoryRecursive keyDir
       createDirectoryIfMissing True keyDir
-      createSymbolicLink (".." </> ".." </> ".." </> ".." </> basePath </> haskellName </> idVal) (keyDir </> idVal)
+      createSymbolicLink (".." </> ".." </> ".." </> ".." </> ".." </> basePath </> haskellName </> idVal) (keyDir </> idVal)
 
     embedRef _ = return ()
     compositeRef _ = return ()
@@ -186,14 +208,13 @@ saveField basePath entityPath field value =
     createSymlink haskellName idVal = do
       let keyDir = entityPath </> fieldName <.> "lnk"
       createDirectoryIfMissing True keyDir
-      createSymbolicLink (".." </> ".." </> ".." </> ".." </> basePath </> haskellName </> idVal) (keyDir </> idVal)
+      createSymbolicLink (".." </> ".." </> ".." </> ".." </> ".." </> basePath </> haskellName </> idVal) (keyDir </> idVal)
 
     unPersistText (PersistText t) = Text.unpack t
     unPersistText _ = error $ "saveField unPersistText:" ++ show [show basePath, show entityPath, show field, show value]
 
     onPersistText _ f p@(PersistText _) = f p
     onPersistText x _ _                 = x
-
 
 -- TODO: Complex keys needs to be handled
 keyString key = unPersistText . head $ keyToValues key
@@ -206,93 +227,6 @@ class RecordContainer (c :: * -> *) where
 
 instance RecordContainer Entity where
   getRecord (Entity _key record) = record
-
--- * Interfacing the persitent API
-
-{-
--- Persistent users use combinators to create these
-data Update record = forall typ. PersistField typ => Update
-    { updateField :: EntityField record typ
-    , updateValue :: typ
-    -- FIXME Replace with expr down the road
-    , updateUpdate :: PersistUpdate
-    }
-    | BackendUpdate
-          (BackendSpecificUpdate (PersistEntityBackend record) record)
--}
-
-updateAlg :: (forall typ . PersistField typ => EntityField record typ -> typ -> PersistUpdate -> a)
-          -> (b -> a) -> (BackendSpecificUpdate (PersistEntityBackend record) record -> b)
-          -> Update record
-          -> a
-updateAlg
-  update
-  backendUpdate backendSpecificUpdate
-  u = case u of
-    Update field value update_ -> update field value update_
-    BackendUpdate bsu -> backendUpdate (backendSpecificUpdate bsu)
-
-persistUpdate
-  assign
-  add
-  substract
-  multiply
-  divide
-  p = case p of
-    Assign   -> assign
-    Add      -> add
-    Subtract -> substract
-    Multiply -> multiply
-    Divide   -> divide
-
-referenceDef
-  noReference
-  foreignRef   haskellName fieldType
-  embedRef     embedEntityDef
-  compositeRef compositeDef
-  r = case r of
-    NoReference      -> noReference
-    ForeignRef hn ft -> foreignRef (haskellName hn) (fieldType ft)
-    EmbedRef e       -> embedRef (embedEntityDef e)
-    CompositeRef c   -> compositeRef (compositeDef c)
-
-{-
--- Persistent users use combinators to create these
-data Filter record = forall typ. PersistField typ => Filter
-    { filterField  :: EntityField record typ
-    , filterValue  :: Either typ [typ] -- FIXME
-    , filterFilter :: PersistFilter -- FIXME
-    }
-    | FilterAnd [Filter record] -- ^ convenient for internal use, not needed for the API
-    | FilterOr  [Filter record]
-    | BackendFilter
-          (BackendSpecificFilter (PersistEntityBackend record) record)
--}
-
---{-
-filterAlg :: (forall typ . PersistField typ => EntityField record typ -> Either typ [typ] -> PersistFilter -> a)
-          -> (b -> a) -> ([a] -> b)
-          -> (b -> a) -> ([a] -> b)
-          -> (c -> a) -> ((BackendSpecificFilter (PersistEntityBackend record) record) -> c)
-          -> Filter record
-          -> a
-filterAlg
-  filter
-  filterAnd filterAndList
-  filterOr  filterOrList
-  backendFilter backendSpecificFilter
-  f = case f of
-    Filter filterField filterValue filterFilter -> filter filterField filterValue filterFilter
-    FilterAnd fs    -> filterAnd . filterAndList $ map filterAlg' fs
-    FilterOr  fs    -> filterOr  . filterOrList  $ map filterAlg' fs
-    BackendFilter b -> backendFilter (backendSpecificFilter b)
-  where
-    filterAlg' = filterAlg
-      filter
-      filterAnd filterAndList
-      filterOr  filterOrList
-      backendFilter backendSpecificFilter
---}
 
 -- Returns True if the given field matches the given value in the given persistValueMap
 fieldMatch :: (PersistEntity record, PersistField typ)
@@ -329,49 +263,23 @@ fieldMatch persistMap field value filter = maybe False id $ do
 -- Matches the given filter with a given record, if the the record mathces with the filter it returns True,
 -- otherwise False.
 matches :: (PersistEntity record, PersistEntityBackend record ~ FileBackend) => Filter record -> record -> Bool
-matches filter record = matcher (persistEntityValueMap record) filter
+matches filter_ record = matcher (persistEntityValueMap record) filter_
   where
     matcher :: (PersistEntity record, PersistEntityBackend record ~ FileBackend)
             => PersistValueMap -> Filter record -> Bool
-    matcher recordMap = filterAlg
+    matcher recordMap = filter
       (fieldMatch recordMap)
       id and
       id or
       (error ("backend specific filter")) id
 
-{-
-data PersistFilter
-  = Eq
-  | Ne
-  | Gt
-  | Lt
-  | Ge
-  | Le
-  | In
-  | NotIn
-  | BackendSpecificFilter Text
--}
+-- Creates a map from a given entity record, that maps a field def into a PersistValue
+persistEntityValueMap :: (PersistEntity record, PersistEntityBackend record ~ FileBackend) => record -> PersistValueMap
+persistEntityValueMap val = Map.fromList $ zip <$> entityDBFields <*> (map toPersistValue . toPersistFields) $ val
 
-persistFilter
-  eq
-  ne
-  gt
-  lt
-  ge
-  le
-  in_
-  notIn
-  backendSpecificFilter
-  f = case f of
-    Eq -> eq
-    Ne -> ne
-    Gt -> gt
-    Lt -> lt
-    Ge -> ge
-    Le -> le
-    In -> in_
-    NotIn -> notIn
-    BackendSpecificFilter text -> backendSpecificFilter text
+entityDBFields :: (PersistEntity record, PersistEntityBackend record ~ FileBackend)
+               => record -> [FieldDef]
+entityDBFields = entityFields . entityDef . Just
 
 -- Converts haskell name to lower case persist name
 -- HACK to get the same info as the working foreign
@@ -383,30 +291,82 @@ haskellNameToDBName
   . intersperse "_"
   . groupBy (\a b -> isUpper a && isLower b)
 
-{-
--- Persistent users use these directly
-data SelectOpt record = forall typ. Asc  (EntityField record typ)
-                      | forall typ. Desc (EntityField record typ)
-                      | OffsetBy Int
-                      | LimitTo Int
--}
+-- * Unique
 
-selectOptAlg
-  :: (forall typ . EntityField record typ -> a)
-  -> (forall typ . EntityField record typ -> a)
-  -> (Int -> a)
-  -> (Int -> a)
-  -> SelectOpt record
-  -> a
-selectOptAlg
-  asc
-  desc
-  offsetBy
-  limitTo
-  s = case s of
-    Asc  field -> asc  field
-    Desc field -> desc field
-    OffsetBy o -> offsetBy o
-    LimitTo  o -> limitTo  o
+-- Creates a hash value from the given fields which represents a
+-- a unique contraint in the database
+hashUniqueValue
+  :: (PersistEntity record, PersistEntityBackend record ~ FileBackend)
+  => Unique record -> Int
+hashUniqueValue = hash . persistUniqueToValues
 
-pair a b = (a, b)
+uniqueRecordToUniqueDef
+  :: (PersistEntity record, PersistEntityBackend record ~ FileBackend)
+  => record -> Unique record -> (EntityDef, Maybe UniqueDef)
+uniqueRecordToUniqueDef record urecord = (ent, Map.lookup key entUniqueMap)
+  where
+    ent = entityDef (Just record)
+    key = persistUniqueToFieldNames urecord
+    entUniqueMap = Map.fromList . map (uniqueFields &&& id) . entityUniques $ ent
+
+getHashPathForUniqueKey
+  :: (PersistEntity val, PersistEntityBackend val ~ FileBackend)
+  => val -> Unique val -> IO FilePath
+getHashPathForUniqueKey value unique = do
+  let (entDef, mUniqueDef) = uniqueRecordToUniqueDef value unique
+  let en = getDBName $ entityDB entDef
+  when (isNothing mUniqueDef) .
+    throw . FBE_AmbigiousUniqueContraintMapping $ fromString en
+  let un = getDBName . uniqueDBName $ fromJust mUniqueDef
+  let hash = hashUniqueValue unique
+  return (en </> un </> show hash)
+
+linkUniqueValuesToEntity
+  :: (PersistEntity record, PersistEntityBackend record ~ FileBackend)
+  => FilePath -> FilePath -> record -> IO ()
+linkUniqueValuesToEntity baseMetaDir entityDir record =
+  forM_ (persistUniqueKeys record) $ \uniqueKey -> do
+    path <- (baseMetaDir </>) <$> getHashPathForUniqueKey record uniqueKey
+    result <- try' $ createSymbolicLink (".." </> ".." </> ".." </> ".." </> entityDir) path
+    case result of
+      Left _ -> throwIO . FBE_UniqueContraint $ fromString entityDir
+      Right _ -> return ()
+  where
+    try' :: IO a -> IO (Either SomeException a)
+    try' = try
+
+instance Hashable PersistValue where
+  hash = hashPersistValue
+  hashWithSalt s = hashWithSalt s . hash -- Naive implementation
+
+hashPersistValue = persistValueAlg
+  persistText
+  persistByteString
+  persistInt64
+  persistDouble
+  persistRational
+  persistBool
+  persistDay
+  persistTimeOfDay
+  persistUTCTime
+  persistNull
+  persistList
+  persistMap
+  persistObjectId
+  persistDbSpecific
+  where
+    persistText = hash
+    persistByteString = hash
+    persistInt64 = hash
+    persistDouble = hash
+    persistRational r = hash (numerator r, denominator r)
+    persistBool = hash
+    persistDay = hash . toModifiedJulianDay
+    persistTimeOfDay t = hash (todHour t, todMin t, resolution $ todSec t)
+    persistUTCTime t = hash (persistDay $ utctDay t, fromEnum $ utctDayTime t)
+    persistNull = hash ()
+    persistList = hash
+    persistMap = hash
+    persistObjectId = hash
+    persistDbSpecific = hash
+

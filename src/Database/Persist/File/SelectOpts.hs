@@ -1,6 +1,7 @@
 {-# LANGUAGE TypeFamilies #-}
 module Database.Persist.File.SelectOpts (
-    selects
+    RecordContainer(..)
+  , selects
   ) where
 
 import           Prelude hiding (lookup)
@@ -16,6 +17,7 @@ import qualified Data.Text as Text
 import           Database.Persist.Class
 import           Database.Persist.Sql
 
+import           Database.Persist.File.Base
 import           Database.Persist.File.FileBackend
 
 
@@ -38,7 +40,7 @@ selects (s:ss) es = concatMap (selects ss) (selecting s es)
 
 selecting :: (PersistEntity record, PersistEntityBackend record ~ FileBackend, RecordContainer cont)
           => SelectOpt record -> Selector (cont record)
-selecting = selectOptAlg
+selecting = selectOpt
   ascendent
   descendent
   offsetBy
@@ -89,10 +91,6 @@ offsetBy d = wrap . drop d
 -- Takes the first t elements of the list
 limitTo :: Int -> Selector record
 limitTo t = wrap . take t
-
-
--- Takes one element and wraps it into a list
-wrap e = [e]
 
 
 -- Looks up a given field in the Map,

@@ -5,6 +5,8 @@
 {-# LANGUAGE TypeFamilies #-}
 module Database.Persist.File.PersistStore where
 
+import           Prelude
+
 import           Data.Aeson as Aeson
 import           Data.Acquire
 import qualified Data.Conduit as Conduit
@@ -29,11 +31,14 @@ import           Data.Typeable
 
 import           Test.QuickCheck
 
+import           Database.Persist.File.Base as FilePersist hiding (updateField)
 import           Database.Persist.File.Directory
 import           Database.Persist.File.FileBackend
 import qualified Database.Persist.File.PVArithmetics as PV
 import           Database.Persist.File.SelectOpts
+import           Database.Persist.File.Unique
 
+import Data.Maybe
 
 infixl 4 <$>
 
@@ -47,10 +52,9 @@ infixl 4 <$>
 getEntityBaseDir :: (MonadIO m, FileBackend ~ PersistEntityBackend val, PersistEntity val)
                  => val -> ReaderT FileBackend m FilePath
 getEntityBaseDir recordType = do
-  FileBackend baseDir <- ask
+  baseDir <- getDataDir
   let entityName = Text.unpack $ entityDBName recordType
   return $ baseDir </> entityName
-
 
 getEntityDirs ::  (MonadIO m, FileBackend ~ PersistEntityBackend val, PersistEntity val)
                  => val -> ReaderT FileBackend m [FilePath]
@@ -59,7 +63,7 @@ getEntityDirs recordType = do
   liftIO $ entryDirs entityDir <$> getDirectoryContents entityDir
 
 -- Return a list of filepath parts that are supposed to be entries for some entities
-entryDirs entityBaseDir = map (entityBaseDir </>) . filter (not . flip elem [".", ".."])
+entryDirs entityBaseDir = map (entityBaseDir </>) . Prelude.filter (not . flip elem [".", ".."])
 
 -- Loads the given type of entity from the given directory.
 -- WARINING: The first parameter recordType just a type indicator, it evaluates to botton.
@@ -72,11 +76,10 @@ getEntity recordType entityDir = liftIO $ do
     Left err -> throw $ FBE_PersistValueConversion err
     Right v  -> v
 
-
 updateEntity :: (MonadIO m, FileBackend ~ PersistEntityBackend val, PersistEntity val)
              => [Update val] -> FilePath -> ReaderT FileBackend m ()
 updateEntity updates entityDir = do
-  FileBackend baseDir <- ask
+  baseDir <- getDataDir
   forM_ updates $
     updateAlg
       (updateCons baseDir entityDir)
@@ -90,20 +93,15 @@ updateEntity updates entityDir = do
       let value' = persistUpdate (\_x y -> y) PV.add PV.sub PV.mul PV.div update a (toPersistValue b)
       updateField baseDir entityDir (persistFieldDef field) value'
 
-
 newtype EntityPath val = EntityPath (FilePath, val)
 
-
 entityPathAlg f (EntityPath (path, val)) = f path val
-
 
 instance RecordContainer EntityPath where
   getRecord (EntityPath (_path, record)) = record
 
-
 getEntityPath :: EntityPath val -> FilePath
 getEntityPath (EntityPath (fp, _e)) = fp
-
 
 filterEntities :: (MonadIO m, FileBackend ~ PersistEntityBackend val, PersistEntity val)
                => [Filter val] -> ReaderT FileBackend m [EntityPath val]
@@ -121,14 +119,12 @@ filterEntities filters = do
         then Just entity
         else Nothing
 
-
 selectEntityList :: (PersistEntity val, MonadIO m, PersistEntityBackend val ~ FileBackend)
                  => [Filter val] -> [SelectOpt val] -> ReaderT FileBackend m [Entity val]
 selectEntityList filters selectOpts = do
   entities <- filterEntities filters
   return . map ((uncurry Entity ^<< keyFromDir *** id) . (entityPathAlg pair))
            $ selects selectOpts entities
-
 
 instance PersistStore FileBackend where
 
@@ -153,14 +149,22 @@ instance PersistStore FileBackend where
   -- Create a new record in the database, returning an automatically created key (in SQL an auto-increment id).
   -- insert :: (MonadIO m, backend ~ PersistEntityBackend val, PersistEntity val) => val -> ReaderT backend m (Key val)
   insert val = do
-    FileBackend baseDir <- ask
-    key <- liftIO $ insertDBValue (flip createTempDirectory "") baseDir val
+    baseDir <- getDataDir
+    metaDir <- getMetaDataDir
+    key <- liftIO $ insertDBValue (flip createTempDirectory "") baseDir metaDir val
+    liftIO $ do
+      print "UNIQUE VALUES"
+--    liftIO $ forM_ (persistUniqueKeys val) $ \unique -> do
+--          getHashPathForUniqueKey val unique >>= print
+--        print $ fmap ((metaDataDir </>) . uniqueDefToRelativePaths) (uniqueDefToUniqueValue val unique)
+--        print $ uniqueDefToUniqueValue val unique
     return $ keyFromDir key
 
   -- Create a new record in the database using the given key.
   -- insertKey :: (MonadIO m, backend ~ PersistEntityBackend val, PersistEntity val) => Key val -> val -> ReaderT backend m ()
   insertKey key val = do
-    FileBackend baseDir <- ask
+    baseDir <- getDataDir
+    metaDir <- getMetaDataDir
     let createDir dir = do
           let keyStr = keyString key
           let entityDir = dir </> keyStr
@@ -168,27 +172,27 @@ instance PersistStore FileBackend where
           when exist $ throw . FBE_KeyExist $ Text.pack keyStr
           createDirectory entityDir
           return entityDir
-    liftIO $ insertDBValue createDir baseDir val
+    liftIO $ insertDBValue createDir baseDir metaDir val
     return ()
 
   -- Put the record in the database with the given key. Unlike replace, if a record with the given key does not exist then a new record will be inserted.
   -- repsert :: (MonadIO m, backend ~ PersistEntityBackend val, PersistEntity val) => Key val -> val -> ReaderT backend m ()
   repsert key val = do
-    FileBackend baseDir <- ask
+    baseDir <- getDataDir
     exist <- liftIO $ doesEntityExist baseDir key
     (if exist then replace else insertKey) key val
 
   -- Replace the record in the database with the given key. Note that the result is undefined if such record does not exist, so you must use 'insertKey or repsert in these cases.
   -- replace :: (MonadIO m, backend ~ PersistEntityBackend val, PersistEntity val) => Key val -> val -> ReaderT backend m ()
   replace key val = do
-    FileBackend baseDir <- ask
+    baseDir <- getDataDir
     liftIO $ replaceDBValue baseDir key val
     --error "PersistStore FileBackend :: replace is undefined"
 
   -- Delete a specific record by identifier. Does nothing if record does not exist.
   -- delete :: (MonadIO m, backend ~ PersistEntityBackend val, PersistEntity val) => Key val -> ReaderT backend m ()
   delete key = do
-    FileBackend baseDir <- ask
+    baseDir <- getDataDir
     liftIO $ do
       exist <- doesEntityExist baseDir key
       when exist . removeDirectoryRecursive $ entityDirFromKey baseDir key
@@ -196,7 +200,7 @@ instance PersistStore FileBackend where
   -- Update individual fields on a specific record.
   -- update :: (MonadIO m, PersistEntity val, backend ~ PersistEntityBackend val) => Key val -> [Update val] -> ReaderT backend m ()
   update key updates = do
-    FileBackend baseDir <- ask
+    baseDir <- getDataDir
     let entityDir = entityDirFromKey baseDir key
     updateEntity updates entityDir
 

@@ -12,19 +12,14 @@ import Prelude hiding (filter, writeFile)
 import           Data.Aeson as Aeson
 import           Data.Bifunctor
 import           Data.Char
-import           Data.Fixed
 import           Data.Hashable
 import           Data.List (groupBy, intersperse)
 import           Data.Map (Map)
 import qualified Data.Map as Map
 import           Data.Maybe
-import           Data.Ratio
 import           Data.String
 import           Data.Text (Text)
 import qualified Data.Text as Text
-import           Data.Time.Calendar
-import           Data.Time.Clock
-import           Data.Time.LocalTime
 import           Database.Persist.Class
 import           Database.Persist.Sql hiding (update, updateField)
 import           Database.Persist.TH
@@ -47,6 +42,7 @@ import           Test.QuickCheck
 
 import           Database.Persist.File.Base hiding (updateField)
 import           Database.Persist.File.Directory
+import           Database.Persist.File.Unique
 
 data FileBackend = FileBackend {
     baseDir :: FilePath
@@ -297,9 +293,12 @@ haskellNameToDBName
 -- a unique contraint in the database
 hashUniqueValue
   :: (PersistEntity record, PersistEntityBackend record ~ FileBackend)
-  => Unique record -> Int
-hashUniqueValue = hash . persistUniqueToValues
+  => Unique record -> UniqueHashPair Int
+hashUniqueValue = hashPair . persistUniqueToValues
 
+-- Extracts the information from an entity and its unique record subset
+-- If the UniqueDef part is Nothing, the unique record is not corresponts
+-- to the given record.
 uniqueRecordToUniqueDef
   :: (PersistEntity record, PersistEntityBackend record ~ FileBackend)
   => record -> Unique record -> (EntityDef, Maybe UniqueDef)
@@ -311,62 +310,32 @@ uniqueRecordToUniqueDef record urecord = (ent, Map.lookup key entUniqueMap)
 
 getHashPathForUniqueKey
   :: (PersistEntity val, PersistEntityBackend val ~ FileBackend)
-  => val -> Unique val -> IO FilePath
+  => val -> Unique val -> IO (UniqueHashPair FilePath)
 getHashPathForUniqueKey value unique = do
   let (entDef, mUniqueDef) = uniqueRecordToUniqueDef value unique
   let en = getDBName $ entityDB entDef
   when (isNothing mUniqueDef) .
     throw . FBE_AmbigiousUniqueContraintMapping $ fromString en
-  let un = getDBName . uniqueDBName $ fromJust mUniqueDef
-  let hash = hashUniqueValue unique
-  return (en </> un </> show hash)
+  let un = uniqueDefToDBName $ fromJust mUniqueDef
+  let hash = fmap show $ hashUniqueValue unique
+  return ((en </>> un) <</>> hash)
 
+-- Creates a link in the baseMetaDir to a given entityDir for the given record.
 linkUniqueValuesToEntity
   :: (PersistEntity record, PersistEntityBackend record ~ FileBackend)
   => FilePath -> FilePath -> record -> IO ()
 linkUniqueValuesToEntity baseMetaDir entityDir record =
   forM_ (persistUniqueKeys record) $ \uniqueKey -> do
-    path <- (baseMetaDir </>) <$> getHashPathForUniqueKey record uniqueKey
-    result <- try' $ createSymbolicLink (".." </> ".." </> ".." </> ".." </> entityDir) path
-    case result of
-      Left _ -> throwIO . FBE_UniqueContraint $ fromString entityDir
-      Right _ -> return ()
+    (UniqueHashPair p1 p2) <- (baseMetaDir </>>) <$> getHashPathForUniqueKey record uniqueKey
+    let link path =
+          -- TODO: Check somehow if the link exist
+          do result <- try' $ createSymbolicLink (".." </> ".." </> ".." </> ".." </> entityDir) path
+             case result of
+               Left _ -> throwIO . FBE_UniqueContraint $ fromString entityDir
+               Right _ -> return ()
+    link p1
+    link p2
+    return ()
   where
     try' :: IO a -> IO (Either SomeException a)
     try' = try
-
-instance Hashable PersistValue where
-  hash = hashPersistValue
-  hashWithSalt s = hashWithSalt s . hash -- Naive implementation
-
-hashPersistValue = persistValueAlg
-  persistText
-  persistByteString
-  persistInt64
-  persistDouble
-  persistRational
-  persistBool
-  persistDay
-  persistTimeOfDay
-  persistUTCTime
-  persistNull
-  persistList
-  persistMap
-  persistObjectId
-  persistDbSpecific
-  where
-    persistText = hash
-    persistByteString = hash
-    persistInt64 = hash
-    persistDouble = hash
-    persistRational r = hash (numerator r, denominator r)
-    persistBool = hash
-    persistDay = hash . toModifiedJulianDay
-    persistTimeOfDay t = hash (todHour t, todMin t, resolution $ todSec t)
-    persistUTCTime t = hash (persistDay $ utctDay t, fromEnum $ utctDayTime t)
-    persistNull = hash ()
-    persistList = hash
-    persistMap = hash
-    persistObjectId = hash
-    persistDbSpecific = hash
-

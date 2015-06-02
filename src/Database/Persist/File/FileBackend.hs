@@ -2,6 +2,7 @@
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE Rank2Types #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeFamilies #-}
@@ -78,11 +79,7 @@ data FileBackendException
   | FBE_UniqueContraint Text
   | FBE_AmbigiousUniqueContraintMapping Text
   | FBE_UnkownLinkFile Text
-  | FBE_Exception ExceptionPlace SomeException
-  deriving (Typeable, Show)
-
-data ExceptionPlace
-  = CreateLink
+  | FBE_Exception Text SomeException
   deriving (Typeable, Show)
 
 instance Exception FileBackendException
@@ -114,6 +111,15 @@ doesEntityExist :: (PersistEntity record, PersistEntityBackend record ~ FileBack
                 => FilePath -> Key record -> IO Bool
 doesEntityExist baseDir key = doesDirectoryExist $ entityDirFromKey baseDir key
 
+getDBValue :: (PersistEntity record, FileBackend ~ PersistEntityBackend record)
+          => record -> FilePath -> IO record
+getDBValue recordType entityDir = do
+  let fields = entityDBFields recordType
+  errorOrValue <- fmap fromPersistValues $ forM fields $ readField entityDir
+  return $ case errorOrValue of
+    Left err -> throw $ FBE_PersistValueConversion err
+    Right v  -> v
+
 insertDBValue :: (PersistEntity record, PersistEntityBackend record ~ FileBackend)
               => (FilePath -> IO FilePath) -> FilePath -> FilePath -> record -> IO FilePath 
 insertDBValue createEntityDir baseDir metaDir val = do
@@ -128,12 +134,15 @@ insertDBValue createEntityDir baseDir metaDir val = do
   return entityDir
 
 replaceDBValue :: (PersistEntity record, PersistEntityBackend record ~ FileBackend)
-               => FilePath -> Key record -> record -> IO ()
-replaceDBValue baseDir key val = do
+               => FilePath -> FilePath -> Key record -> record -> IO ()
+replaceDBValue baseDir metaDir key val = do
   let values = zip <$> entityDBFields <*> (map toPersistValue . toPersistFields) $ val
   let entityDir = entityDirFromKey baseDir key
+  oldValue <- getDBValue val entityDir
+  removeUniqueValueLink metaDir oldValue
   forM_ values $ \(fieldInfo, persistValue) ->
     updateField baseDir entityDir fieldInfo persistValue
+  linkUniqueValuesToEntity metaDir entityDir val
 
 updateField :: FilePath -> FilePath -> FieldDef -> PersistValue -> IO ()
 updateField basePath entityPath field value =
@@ -324,7 +333,7 @@ getHashPathForUniqueKey value unique = do
   let un = uniqueDefToDBName $ fromJust mUniqueDef
   return ((en </> un) </>> hashUniqueValue unique)
 
--- Creates a link in the baseMetaDir to a given entityDir for the given record.
+-- Creates links in the baseMetaDir to all unique values for the given entity
 linkUniqueValuesToEntity
   :: (PersistEntity record, PersistEntityBackend record ~ FileBackend)
   => FilePath -> FilePath -> record -> IO ()
@@ -337,12 +346,28 @@ linkUniqueValuesToEntity baseMetaDir entityDir record =
     link uniqueHashPath = do
       exist <- doesDirectoryExist uniqueHashPath
       when exist .
-        throw . FBE_UniqueContraint . Text.pack $ concat ["Existing entity: ", fromString entityDir]
+        throw . FBE_UniqueContraint . Text.pack $ concat ["Existing entity: ", uniqueHashPath]
       createDirectoryIfMissing True (uniqueHashPathDir uniqueHashPath)
       do result <- try' $ createSymbolicLink (".." </> ".." </> ".." </> ".." </> ".." </> entityDir) uniqueHashPath
          case result of
-           Left e -> throwIO $ FBE_Exception CreateLink e
+           Left e -> throwIO $ FBE_Exception "CreateLink" e
            Right _ -> return ()
 
-    try' :: IO a -> IO (Either SomeException a)
-    try' = try
+try' :: IO a -> IO (Either SomeException a)
+try' = try
+
+-- Removes the links from the baseMetaDir from all unique values for the given entity
+removeUniqueValueLink
+  :: (PersistEntity record, PersistEntityBackend record ~ FileBackend)
+  => FilePath -> record -> IO ()
+removeUniqueValueLink baseMetaDir record =
+  forM_ (persistUniqueKeys record) $ \uniqueKey -> do
+    path <- (baseMetaDir </>) <$> getHashPathForUniqueKey record uniqueKey
+    remove path
+  where
+
+    remove uniqueHashPath = do
+      result <- try' $ removeLink uniqueHashPath
+      case result of
+        Left e -> throwIO $ FBE_Exception "RemoveLink" e
+        Right _ -> return ()

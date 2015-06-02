@@ -35,23 +35,26 @@ BlogPost
 
 testFileBackend = runFileBackend (FileBackend "data/") $ do
   migrateAll
-  k0 <- insert (Person "user" (Just 10))
-  k1 <- insert (BlogPost "vlog" k0 Nothing)
-  k2 <- insert (BlogPost "vlog" k0 (Just k1))
-  k3 <- insert (BlogPost "vlog" k0 Nothing)
-  print' "insert"
-  replace k2 (BlogPost "vlog" k0 (Just k1))
-  print' "replace"
-  update k1 [BlogPostTitle =. "vlog1"]
-  print' "update"
-  (get k0) >>= print'
-  (get k1) >>= print'
-  (get k2) >>= print'
-  (get k3) >>= print'
-  (count [BlogPostPrevious ==. Nothing]) >>= print'
+  p0 <- insert (Person "user" (Just 10))
+  p1 <- insert (Person "user" (Just 10))
+  p2 <- insert (Person "user" (Just 10))
+  p3 <- insert (Person "user" (Just 10))
+  k1 <- insert (BlogPost "vlog0" p0 Nothing)
+  k2 <- insert (BlogPost "vlog1" p1 (Just k1))
+  k3 <- insert (BlogPost "vlog2" p2 (Just k2))
+  printIO "insert"
+  replace k2 (BlogPost "vlog4" p3 (Just k3))
+  printIO "replace"
+  update k1 [BlogPostTitle =. "vlog3"]
+  printIO "update"
+  (get p0) >>= printIO
+  (get k1) >>= printIO
+  (get k2) >>= printIO
+  (get k3) >>= printIO
+  (count [BlogPostPrevious ==. Nothing]) >>= printIO
   delete k2
   return ()
   where
 
-print' :: (MonadIO m, Show a) => a -> m ()
-print' = liftIO . print
+printIO :: (MonadIO m, Show a) => a -> m ()
+printIO = liftIO . print

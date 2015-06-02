@@ -69,12 +69,7 @@ entryDirs entityBaseDir = map (entityBaseDir </>) . Prelude.filter (not . flip e
 -- WARINING: The first parameter recordType just a type indicator, it evaluates to botton.
 getEntity :: (MonadIO m, FileBackend ~ PersistEntityBackend val, PersistEntity val)
           => val -> FilePath -> ReaderT FileBackend m val
-getEntity recordType entityDir = liftIO $ do
-  let fields = entityDBFields recordType
-  errorOrValue <- fmap fromPersistValues $ forM fields $ readField entityDir
-  return $ case errorOrValue of
-    Left err -> throw $ FBE_PersistValueConversion err
-    Right v  -> v
+getEntity recordType entityDir = liftIO $ getDBValue recordType entityDir
 
 updateEntity :: (MonadIO m, FileBackend ~ PersistEntityBackend val, PersistEntity val)
              => [Update val] -> FilePath -> ReaderT FileBackend m ()
@@ -186,16 +181,21 @@ instance PersistStore FileBackend where
   -- replace :: (MonadIO m, backend ~ PersistEntityBackend val, PersistEntity val) => Key val -> val -> ReaderT backend m ()
   replace key val = do
     baseDir <- getDataDir
-    liftIO $ replaceDBValue baseDir key val
+    metaDir <- getMetaDataDir
+    liftIO $ replaceDBValue baseDir metaDir key val
     --error "PersistStore FileBackend :: replace is undefined"
 
   -- Delete a specific record by identifier. Does nothing if record does not exist.
   -- delete :: (MonadIO m, backend ~ PersistEntityBackend val, PersistEntity val) => Key val -> ReaderT backend m ()
   delete key = do
     baseDir <- getDataDir
+    metaDir <- getMetaDataDir
+    value <- get key
     liftIO $ do
+      onJust (removeUniqueValueLink metaDir) value
       exist <- doesEntityExist baseDir key
-      when exist . removeDirectoryRecursive $ entityDirFromKey baseDir key
+      when exist $ do
+        removeDirectoryRecursive $ entityDirFromKey baseDir key
 
   -- Update individual fields on a specific record.
   -- update :: (MonadIO m, PersistEntity val, backend ~ PersistEntityBackend val) => Key val -> [Update val] -> ReaderT backend m ()
@@ -280,3 +280,7 @@ instance PersistFieldSql (BackendKey FileBackend) where
   --sqlType :: Monad m => m a -> SqlType
   sqlType _ = SqlString
 
+-- * Helpers
+
+onJust :: (Monad m) => (a -> m ()) -> Maybe a -> m ()
+onJust k = maybe (return ()) k

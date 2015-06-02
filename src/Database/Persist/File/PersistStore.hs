@@ -147,12 +147,6 @@ instance PersistStore FileBackend where
     baseDir <- getDataDir
     metaDir <- getMetaDataDir
     key <- liftIO $ insertDBValue (flip createTempDirectory "") baseDir metaDir val
-    liftIO $ do
-      print "UNIQUE VALUES"
---    liftIO $ forM_ (persistUniqueKeys val) $ \unique -> do
---          getHashPathForUniqueKey val unique >>= print
---        print $ fmap ((metaDataDir </>) . uniqueDefToRelativePaths) (uniqueDefToUniqueValue val unique)
---        print $ uniqueDefToUniqueValue val unique
     return $ keyFromDir key
 
   -- Create a new record in the database using the given key.

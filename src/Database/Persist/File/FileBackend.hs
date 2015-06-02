@@ -126,7 +126,6 @@ insertDBValue createEntityDir baseDir metaDir val = do
   let entityName = Text.unpack $ entityDBName val
   let entityDirBase = baseDir </> entityName
   entityDir <- createEntityDir entityDirBase
-  print entityDir
   let values = zip <$> entityDBFields <*> (map toPersistValue . toPersistFields) $ val
   forM_ values $ \(fieldInfo, persistValue) ->
     saveField baseDir entityDir fieldInfo persistValue

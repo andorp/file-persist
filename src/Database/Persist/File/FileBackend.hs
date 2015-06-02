@@ -293,7 +293,7 @@ haskellNameToDBName
 -- a unique contraint in the database
 hashUniqueValue
   :: (PersistEntity record, PersistEntityBackend record ~ FileBackend)
-  => Unique record -> UniqueHashPair Int
+  => Unique record -> UniqueHashPair
 hashUniqueValue = hashPair . persistUniqueToValues
 
 -- Extracts the information from an entity and its unique record subset
@@ -310,15 +310,14 @@ uniqueRecordToUniqueDef record urecord = (ent, Map.lookup key entUniqueMap)
 
 getHashPathForUniqueKey
   :: (PersistEntity val, PersistEntityBackend val ~ FileBackend)
-  => val -> Unique val -> IO (UniqueHashPair FilePath)
+  => val -> Unique val -> IO UniqueHashPath
 getHashPathForUniqueKey value unique = do
   let (entDef, mUniqueDef) = uniqueRecordToUniqueDef value unique
   let en = getDBName $ entityDB entDef
   when (isNothing mUniqueDef) .
     throw . FBE_AmbigiousUniqueContraintMapping $ fromString en
   let un = uniqueDefToDBName $ fromJust mUniqueDef
-  let hash = fmap show $ hashUniqueValue unique
-  return ((en </>> un) <</>> hash)
+  return ((en </> un) </>> hashUniqueValue unique)
 
 -- Creates a link in the baseMetaDir to a given entityDir for the given record.
 linkUniqueValuesToEntity
@@ -326,15 +325,14 @@ linkUniqueValuesToEntity
   => FilePath -> FilePath -> record -> IO ()
 linkUniqueValuesToEntity baseMetaDir entityDir record =
   forM_ (persistUniqueKeys record) $ \uniqueKey -> do
-    (UniqueHashPair p1 p2) <- (baseMetaDir </>>) <$> getHashPathForUniqueKey record uniqueKey
-    let link path =
-          -- TODO: Check somehow if the link exist
-          do result <- try' $ createSymbolicLink (".." </> ".." </> ".." </> ".." </> entityDir) path
+    path <- (baseMetaDir </>) <$> getHashPathForUniqueKey record uniqueKey
+    let link uniqueHashPath = do
+          createDirectoryIfMissing True (uniqueHashPathDir uniqueHashPath)
+          do result <- try' $ createSymbolicLink (".." </> ".." </> ".." </> ".." </> ".." </> entityDir) uniqueHashPath
              case result of
                Left _ -> throwIO . FBE_UniqueContraint $ fromString entityDir
                Right _ -> return ()
-    link p1
-    link p2
+    link path
     return ()
   where
     try' :: IO a -> IO (Either SomeException a)

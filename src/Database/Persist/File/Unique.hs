@@ -12,46 +12,43 @@ import Database.Persist.File.Base
 import Database.Persist.File.Directory
 
 -- Represents an entity with two information to avoid hash
-data UniqueHashPair a = UniqueHashPair {
-    first  :: a
-  , second :: a
-  } deriving (Eq, Functor, Show)
+data UniqueHashPair = UniqueHashPair {
+    first  :: Int
+  , second :: Int
+  } deriving (Eq, Show)
 
 infixl 9 </>>
 
-(</>>) :: FilePath -> UniqueHashPair FilePath -> UniqueHashPair FilePath
-(</>>) fp (UniqueHashPair p1 p2) = UniqueHashPair (fp </> p1) (fp </> p2)
+type UniqueHashPath = FilePath
 
-infix 9 <</>>
+-- Applies the hash after the given path:
+-- Eg: path/-59348937/764387
+(</>>) :: FilePath -> UniqueHashPair -> UniqueHashPath
+(</>>) fp (UniqueHashPair p1 p2) = (fp </> show p1 </> show p2)
 
-(<</>>) :: UniqueHashPair FilePath -> UniqueHashPair FilePath -> UniqueHashPair FilePath
-(<</>>) (UniqueHashPair p1 q1) (UniqueHashPair p2 q2) = UniqueHashPair (p1 </> p2) (q1 </> q2)
-
-salt :: UniqueHashPair FilePath -> UniqueHashPair FilePath
-salt = uniqueHashPair $ \p1 p2 ->
-         UniqueHashPair (saltPath saltOne p1) (saltPath saltTwo p2)
-  where-- Join the salt to the end of the path
-    saltPath :: Salt -> FilePath -> FilePath
-    saltPath salt = (++ (show salt))
+-- Eg: path/-59348937/764387 -> path/-59348937
+uniqueHashPathDir :: UniqueHashPath -> FilePath
+uniqueHashPathDir = dropFileName
 
 uniqueHashPair f (UniqueHashPair p1 p2) = f p1 p2
 
 -- Returns the dbName for the given unique path
 uniqueDefToDBName = uniqueDef $ \_haskellName dbname fieldNames _attrs ->
   let name = getDBName dbname
-  in salt $ UniqueHashPair name name
+  in name
 
+{-
 dirToUniqueRecord eDef urDef =
   let ef = getDBName $ entityDB eDef
       uf = uniqueDefToDBName urDef
-  in ef </>> uf
+  in ef </> uf
+-}
 
 entityDefToUniqueRelPaths e =
   let entityDBName = getDBName $ entityDB e
-      uniqueRelPaths = (entityDBName:) . concatMap (paths . (entityDBName </>>)) . map uniqueDefToDBName $ entityUniques e
+      uniqueRelPaths = (entityDBName:) . map ((entityDBName </>) . uniqueDefToDBName) $ entityUniques e
   in uniqueRelPaths
-  where
-    paths = uniqueHashPair (\x y -> [x,y])
+
 
 type Salt = Int
 
@@ -60,7 +57,7 @@ saltOne = 0
 saltTwo = 1
 
 -- Create a hash pair from the persist value
-hashPair :: (Hashable h) => h -> UniqueHashPair Int
+hashPair :: (Hashable h) => h -> UniqueHashPair
 hashPair p = UniqueHashPair (hashWithSalt saltOne p) (hashWithSalt saltTwo p)
 
 instance Hashable PersistValue where

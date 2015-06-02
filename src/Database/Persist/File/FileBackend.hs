@@ -78,7 +78,12 @@ data FileBackendException
   | FBE_UniqueContraint Text
   | FBE_AmbigiousUniqueContraintMapping Text
   | FBE_UnkownLinkFile Text
-  deriving (Eq, Typeable, Show)
+  | FBE_Exception ExceptionPlace SomeException
+  deriving (Typeable, Show)
+
+data ExceptionPlace
+  = CreateLink
+  deriving (Typeable, Show)
 
 instance Exception FileBackendException
 
@@ -326,14 +331,18 @@ linkUniqueValuesToEntity
 linkUniqueValuesToEntity baseMetaDir entityDir record =
   forM_ (persistUniqueKeys record) $ \uniqueKey -> do
     path <- (baseMetaDir </>) <$> getHashPathForUniqueKey record uniqueKey
-    let link uniqueHashPath = do
-          createDirectoryIfMissing True (uniqueHashPathDir uniqueHashPath)
-          do result <- try' $ createSymbolicLink (".." </> ".." </> ".." </> ".." </> ".." </> entityDir) uniqueHashPath
-             case result of
-               Left _ -> throwIO . FBE_UniqueContraint $ fromString entityDir
-               Right _ -> return ()
     link path
-    return ()
   where
+
+    link uniqueHashPath = do
+      exist <- doesDirectoryExist uniqueHashPath
+      when exist .
+        throw . FBE_UniqueContraint . Text.pack $ concat ["Existing entity: ", fromString entityDir]
+      createDirectoryIfMissing True (uniqueHashPathDir uniqueHashPath)
+      do result <- try' $ createSymbolicLink (".." </> ".." </> ".." </> ".." </> ".." </> entityDir) uniqueHashPath
+         case result of
+           Left e -> throwIO $ FBE_Exception CreateLink e
+           Right _ -> return ()
+
     try' :: IO a -> IO (Either SomeException a)
     try' = try

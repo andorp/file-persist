@@ -37,18 +37,10 @@ uniqueDefToDBName = uniqueDef $ \_haskellName dbname fieldNames _attrs ->
   let name = getDBName dbname
   in name
 
-{-
-dirToUniqueRecord eDef urDef =
-  let ef = getDBName $ entityDB eDef
-      uf = uniqueDefToDBName urDef
-  in ef </> uf
--}
-
 entityDefToUniqueRelPaths e =
   let entityDBName = getDBName $ entityDB e
       uniqueRelPaths = (entityDBName:) . map ((entityDBName </>) . uniqueDefToDBName) $ entityUniques e
   in uniqueRelPaths
-
 
 type Salt = Int
 

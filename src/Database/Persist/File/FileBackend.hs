@@ -166,7 +166,7 @@ updateField basePath entityPath field value =
       let keyDir = entityPath </> fieldName <.> "lnk"
       removeDirectoryRecursive keyDir
       createDirectoryIfMissing True keyDir
-      createSymbolicLink (".." </> ".." </> ".." </> ".." </> ".." </> basePath </> haskellName </> idVal) (keyDir </> idVal)
+      createSymbolicLink (ancestor 5 (basePath </> haskellName </> idVal)) (keyDir </> idVal)
 
     embedRef _ = return ()
     compositeRef _ = return ()
@@ -217,7 +217,7 @@ saveField basePath entityPath field value =
     createSymlink haskellName idVal = do
       let keyDir = entityPath </> fieldName <.> "lnk"
       createDirectoryIfMissing True keyDir
-      createSymbolicLink (".." </> ".." </> ".." </> ".." </> ".." </> basePath </> haskellName </> idVal) (keyDir </> idVal)
+      createSymbolicLink (ancestor 5 (basePath </> haskellName </> idVal)) (keyDir </> idVal)
 
     unPersistText (PersistText t) = Text.unpack t
     unPersistText _ = error $ "saveField unPersistText:" ++ show [show basePath, show entityPath, show field, show value]
@@ -347,7 +347,7 @@ linkUniqueValuesToEntity baseMetaDir entityDir record =
       when exist .
         throw . FBE_UniqueContraint . Text.pack $ concat ["Existing entity: ", uniqueHashPath]
       createDirectoryIfMissing True (uniqueHashPathDir uniqueHashPath)
-      do result <- try' $ createSymbolicLink (".." </> ".." </> ".." </> ".." </> ".." </> entityDir) uniqueHashPath
+      do result <- try' $ createSymbolicLink (ancestor 5 entityDir) uniqueHashPath
          case result of
            Left e -> throwIO $ FBE_Exception "CreateLink" e
            Right _ -> return ()
@@ -370,3 +370,9 @@ removeUniqueValueLink baseMetaDir record =
       case result of
         Left e -> throwIO $ FBE_Exception "RemoveLink" e
         Right _ -> return ()
+
+-- * Helpers
+
+-- Create the nth ancestor path of the given filepath
+ancestor :: Int -> FilePath -> FilePath
+ancestor n path = joinPath (replicate n "..") </> path

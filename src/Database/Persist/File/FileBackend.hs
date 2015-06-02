@@ -332,6 +332,24 @@ getHashPathForUniqueKey value unique = do
   let un = uniqueDefToDBName $ fromJust mUniqueDef
   return ((en </> un) </>> hashUniqueValue unique)
 
+getEntityByUniqueKey
+  :: (PersistEntity val, PersistEntityBackend val ~ FileBackend)
+  => FilePath -> Unique val -> IO (Maybe (Entity val))
+getEntityByUniqueKey baseMetaDir unique = do
+  linkPath <- (baseMetaDir </>) <$> getHashPathForUniqueKey fake unique
+  exist <- doesDirectoryExist linkPath
+  case exist of
+    False -> return Nothing
+    True -> do
+      realPath <- removeAncestors <$> readSymbolicLink linkPath
+      print realPath
+      value <- getDBValue fake realPath
+      return (Just (Entity (keyFromDir realPath) value))
+  where
+    fake :: val
+    fake = error "getEntityByUniqueKey: fake value is used"
+    removeAncestors = joinPath . drop 5 . splitPath -- TODO: Magic number
+
 -- Creates links in the baseMetaDir to all unique values for the given entity
 linkUniqueValuesToEntity
   :: (PersistEntity record, PersistEntityBackend record ~ FileBackend)
@@ -351,9 +369,6 @@ linkUniqueValuesToEntity baseMetaDir entityDir record =
          case result of
            Left e -> throwIO $ FBE_Exception "CreateLink" e
            Right _ -> return ()
-
-try' :: IO a -> IO (Either SomeException a)
-try' = try
 
 -- Removes the links from the baseMetaDir from all unique values for the given entity
 removeUniqueValueLink
@@ -376,3 +391,6 @@ removeUniqueValueLink baseMetaDir record =
 -- Create the nth ancestor path of the given filepath
 ancestor :: Int -> FilePath -> FilePath
 ancestor n path = joinPath (replicate n "..") </> path
+
+try' :: IO a -> IO (Either SomeException a)
+try' = try

@@ -204,7 +204,9 @@ instance PersistUnique FileBackend where
 
   -- Get a record by unique key, if available. Returns also the identifier.
   -- getBy :: (MonadIO m, backend ~ PersistEntityBackend val, PersistEntity val) => Unique val -> ReaderT backend m (Maybe (Entity val))
-  getBy val = error "PersistUnique FileBackend :: getBy is undefined"
+  getBy val = do
+    metaDir <- getMetaDataDir
+    liftIO $ getEntityByUniqueKey metaDir val
 
   -- Delete a specific record by unique key. Does nothing if no record matches.
   -- deleteBy :: (MonadIO m, PersistEntityBackend val ~ backend, PersistEntity val) => Unique val -> ReaderT backend m ()

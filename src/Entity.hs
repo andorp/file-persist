@@ -51,6 +51,7 @@ testFileBackend = runFileBackend (FileBackend "data/") $ do
   (get k1) >>= printIO
   (get k2) >>= printIO
   (get k3) >>= printIO
+  (getBy (UniqueTitle "vlog0")) >>= printIO
   (count [BlogPostPrevious ==. Nothing]) >>= printIO
   delete k2
   return ()

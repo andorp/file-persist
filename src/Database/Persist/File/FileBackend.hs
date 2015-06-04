@@ -332,11 +332,17 @@ getHashPathForUniqueKey value unique = do
   let un = uniqueDefToDBName $ fromJust mUniqueDef
   return ((en </> un) </>> hashUniqueValue unique)
 
+getFullHashPathForUniqueKey
+  :: (PersistEntity val, PersistEntityBackend val ~ FileBackend)
+  => FilePath -> val -> Unique val -> IO UniqueHashPath
+getFullHashPathForUniqueKey baseMetaDir record uniqueKey =
+  (baseMetaDir </>) <$> getHashPathForUniqueKey record uniqueKey
+
 getEntityByUniqueKey
   :: (PersistEntity val, PersistEntityBackend val ~ FileBackend)
   => FilePath -> Unique val -> IO (Maybe (Entity val))
 getEntityByUniqueKey baseMetaDir unique = do
-  linkPath <- (baseMetaDir </>) <$> getHashPathForUniqueKey fake unique
+  linkPath <- getFullHashPathForUniqueKey baseMetaDir fake unique
   exist <- doesDirectoryExist linkPath
   case exist of
     False -> return Nothing
@@ -356,10 +362,9 @@ linkUniqueValuesToEntity
   => FilePath -> FilePath -> record -> IO ()
 linkUniqueValuesToEntity baseMetaDir entityDir record =
   forM_ (persistUniqueKeys record) $ \uniqueKey -> do
-    path <- (baseMetaDir </>) <$> getHashPathForUniqueKey record uniqueKey
+    path <- getFullHashPathForUniqueKey baseMetaDir record uniqueKey
     link path
   where
-
     link uniqueHashPath = do
       exist <- doesDirectoryExist uniqueHashPath
       when exist .
@@ -376,15 +381,14 @@ removeUniqueValueLink
   => FilePath -> record -> IO ()
 removeUniqueValueLink baseMetaDir record =
   forM_ (persistUniqueKeys record) $ \uniqueKey -> do
-    path <- (baseMetaDir </>) <$> getHashPathForUniqueKey record uniqueKey
-    remove path
-  where
+    path <- getFullHashPathForUniqueKey baseMetaDir record uniqueKey
+    removeUniqueLink path
 
-    remove uniqueHashPath = do
-      result <- try' $ removeLink uniqueHashPath
-      case result of
-        Left e -> throwIO $ FBE_Exception "RemoveLink" e
-        Right _ -> return ()
+removeUniqueLink uniqueHashPath = do
+  result <- try' $ removeLink uniqueHashPath
+  case result of
+    Left e -> throwIO $ FBE_Exception "RemoveLink" e
+    Right _ -> return ()
 
 -- * Helpers
 

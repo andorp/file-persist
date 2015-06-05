@@ -348,7 +348,6 @@ getEntityByUniqueKey baseMetaDir unique = do
     False -> return Nothing
     True -> do
       realPath <- removeAncestors <$> readSymbolicLink linkPath
-      print realPath
       value <- getDBValue fake realPath
       return (Just (Entity (keyFromDir realPath) value))
   where
@@ -375,6 +374,18 @@ linkUniqueValuesToEntity baseMetaDir entityDir record =
            Left e -> throwIO $ FBE_Exception "CreateLink" e
            Right _ -> return ()
 
+removeUniqueValueLink'
+  :: (PersistEntity record, PersistEntityBackend record ~ FileBackend)
+  => FilePath -> Unique record -> IO ()
+removeUniqueValueLink' baseMetaDir uniqueKey = do
+  let record = fake uniqueKey
+  forM_ (persistUniqueKeys record) $ \uniqueKey -> do
+    path <- getFullHashPathForUniqueKey baseMetaDir record uniqueKey
+    removeUniqueLink path
+  where
+    fake :: Unique record -> record
+    fake = error "fake object is used in removeUniqueValueLink"
+
 -- Removes the links from the baseMetaDir from all unique values for the given entity
 removeUniqueValueLink
   :: (PersistEntity record, PersistEntityBackend record ~ FileBackend)
@@ -390,11 +401,33 @@ removeUniqueLink uniqueHashPath = do
     Left e -> throwIO $ FBE_Exception "RemoveLink" e
     Right _ -> return ()
 
+deleteRecord baseDir metaDir key value = do
+  removeUniqueValueLink metaDir value
+  exist <- doesEntityExist baseDir key
+  when exist $ do
+    removeDirectoryRecursive $ entityDirFromKey baseDir key
+
+deleteByUnique
+  :: (PersistEntity record, PersistEntityBackend record ~ FileBackend)
+  => FilePath -> FilePath -> Unique record -> IO ()
+deleteByUnique baseDir metaDir uniqueKey = do
+  entity <- getEntityByUniqueKey baseDir uniqueKey
+  onJust entity $ \e ->
+    deleteRecord baseDir metaDir (entityKey e) (entityVal e)
+
 -- * Helpers
 
 -- Create the nth ancestor path of the given filepath
 ancestor :: Int -> FilePath -> FilePath
 ancestor n path = joinPath (replicate n "..") </> path
 
+-- Supposing there is at least n of ".." at the beginning
+-- of the path we drop them.
+dropAncestorParts :: Int -> FilePath -> FilePath
+dropAncestorParts n = joinPath . drop n . splitPath
+
 try' :: IO a -> IO (Either SomeException a)
 try' = try
+
+onJust :: (Monad m) => Maybe a -> (a -> m ()) -> m ()
+onJust x k = maybe (return ()) k x

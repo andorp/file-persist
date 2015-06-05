@@ -185,11 +185,8 @@ instance PersistStore FileBackend where
     baseDir <- getDataDir
     metaDir <- getMetaDataDir
     value <- get key
-    liftIO $ do
-      onJust (removeUniqueValueLink metaDir) value
-      exist <- doesEntityExist baseDir key
-      when exist $ do
-        removeDirectoryRecursive $ entityDirFromKey baseDir key
+    onJust value $ \value1 ->
+      liftIO $ deleteRecord baseDir metaDir key value1
 
   -- Update individual fields on a specific record.
   -- update :: (MonadIO m, PersistEntity val, backend ~ PersistEntityBackend val) => Key val -> [Update val] -> ReaderT backend m ()
@@ -210,7 +207,10 @@ instance PersistUnique FileBackend where
 
   -- Delete a specific record by unique key. Does nothing if no record matches.
   -- deleteBy :: (MonadIO m, PersistEntityBackend val ~ backend, PersistEntity val) => Unique val -> ReaderT backend m ()
-  deleteBy val = error "PersistUnique FileBackend :: deleteBy is undefined"
+  deleteBy val = do
+    baseDir <- getDataDir
+    metaDir <- getMetaDataDir
+    liftIO $ deleteByUnique baseDir metaDir val
 
 instance PersistQuery FileBackend where
   -- Minimal complete definition
@@ -276,7 +276,4 @@ instance PersistFieldSql (BackendKey FileBackend) where
   --sqlType :: Monad m => m a -> SqlType
   sqlType _ = SqlString
 
--- * Helpers
 
-onJust :: (Monad m) => (a -> m ()) -> Maybe a -> m ()
-onJust k = maybe (return ()) k
